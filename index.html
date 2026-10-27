@@ -332,7 +332,7 @@ function analyze(src){
     const im=new Image();
     im.onload=()=>{
       try{
-        const k=140/Math.max(im.naturalWidth,im.naturalHeight);
+        const k=Math.min(1,380/Math.max(im.naturalWidth,im.naturalHeight));
         const w=Math.max(8,Math.round(im.naturalWidth*k)),h=Math.max(8,Math.round(im.naturalHeight*k));
         const cv=document.createElement('canvas');cv.width=w;cv.height=h;
         const cx=cv.getContext('2d',{willReadFrequently:true});cx.drawImage(im,0,0,w,h);
@@ -356,13 +356,15 @@ function analyze(src){
         else{foil='rainbow';why='색이 살아 있어 레인보우 홀로'}
         // 마스크: 상대적으로 밝은 부분 + 윤곽선에 포일
         const t=avgL+std*.25-.12;
+        const A=new Float32Array(n);
         for(let y=0;y<h;y++)for(let x=0;x<w;x++){
           const i=y*w+x,l=L[i];
           const ex=x>0&&x<w-1?Math.abs(L[i+1]-L[i-1]):0,ey=y>0&&y<h-1?Math.abs(L[i+w]-L[i-w]):0;
-          const hl=Math.min(1,Math.max(0,(l-t)/.3)),ed=Math.min(1,(ex+ey)*2.6);
-          const a=Math.max(.1,hl*.9,ed*.85);
-          d[i*4]=d[i*4+1]=d[i*4+2]=255;d[i*4+3]=Math.round(a*255);
+          const hl=Math.min(1,Math.max(0,(l-t)/.3)),ed=Math.min(1,(ex+ey)*3.4);
+          A[i]=Math.max(.1,hl*.9,ed*.85);
         }
+        for(let p=0;p<2;p++){const B=A.slice();for(let y=1;y<h-1;y++)for(let x=1;x<w-1;x++){const i=y*w+x;A[i]=(B[i]*4+B[i-1]+B[i+1]+B[i-w]+B[i+w])/8}}
+        for(let i=0;i<n;i++){d[i*4]=d[i*4+1]=d[i*4+2]=255;d[i*4+3]=Math.round(A[i]*255)}
         cx.putImageData(px,0,0);
         res({foil,hue,sat:mono?'0%':Math.round(40+Math.min(1,avgS)*35)+'%',mask:cv.toDataURL('image/png'),why});
       }catch(_){res(null)}
