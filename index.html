@@ -203,6 +203,7 @@ form{display:flex;flex-direction:column;min-width:0;border-top:1.5px solid var(-
   padding:calc(env(safe-area-inset-top,0px) + 20px) max(16px,env(safe-area-inset-right,0px)) calc(env(safe-area-inset-bottom,0px) + 20px) max(16px,env(safe-area-inset-left,0px));
   -webkit-backdrop-filter:blur(10px);backdrop-filter:blur(10px)}
 .modal .stage{width:min(82vw,420px,calc((100vh - 170px)*63/88));touch-action:none}
+#gyro-chip:disabled{cursor:default;opacity:.7}
 .modal .meta{display:flex;flex-wrap:wrap;justify-content:center;gap:8px;align-items:center;color:#fff}
 .modal .meta .who{font-size:13px;opacity:.75;width:100%;text-align:center;font-family:var(--f-mono)}
 .modal .btn{background:rgba(255,255,255,.12);color:#fff}
@@ -231,7 +232,7 @@ form{display:flex;flex-direction:column;min-width:0;border-top:1.5px solid var(-
       </label>
       <div class="chips" id="chips" aria-label="무드 키워드로 거르기"></div>
     </div>
-    <div class="meta-row"><span id="count-line">카드를 불러오는 중입니다</span><span>최신순 · 번호는 등록 순서</span></div>
+    <div class="meta-row"><span id="count-line">카드를 불러오는 중입니다</span><button type="button" class="chip" id="gyro-chip" hidden>폰을 기울여 카드 보기 켜기</button><span>최신순 · 번호는 등록 순서</span></div>
     <div class="note" id="gallery-note" hidden style="margin-bottom:18px"></div>
     <div class="grid" id="grid"></div>
   </section>
@@ -410,7 +411,11 @@ function fillCard(c,d,no,onWhy){
   });
 }
 
-/* ---------- tilt (spring) ---------- */
+/* ---------- tilt (spring) : 데스크톱은 마우스, 폰은 기울기 센서 ---------- */
+const coarse=matchMedia('(hover: none) and (pointer: coarse)').matches;
+const TILTS=new Set(),VIS=new WeakMap();
+const io='IntersectionObserver' in window?new IntersectionObserver(es=>es.forEach(e=>VIS.set(e.target,e.isIntersecting)),{rootMargin:'120px'}):null;
+let gyroOn=false;
 function tilt(card,{touch=false}={}){
   const s={x:50,y:50,o:0,tx:50,ty:50,to:0,raf:0};
   const apply=()=>{
@@ -426,19 +431,55 @@ function tilt(card,{touch=false}={}){
     s.raf=(Math.abs(s.tx-s.x)+Math.abs(s.ty-s.y)+Math.abs(s.to-s.o)*50>.05)?requestAnimationFrame(step):0;
   };
   const kick=()=>{if(!s.raf)s.raf=requestAnimationFrame(step)};
+  const set=(x,y,o)=>{s.tx=x;s.ty=y;s.to=o;kick()};
   const move=e=>{
-    if(!touch&&e.pointerType!=='mouse')return;
     const r=card.getBoundingClientRect();
-    s.tx=Math.min(100,Math.max(0,(e.clientX-r.left)/r.width*100));s.ty=Math.min(100,Math.max(0,(e.clientY-r.top)/r.height*100));
-    s.to=1;kick();
+    set(Math.min(100,Math.max(0,(e.clientX-r.left)/r.width*100)),Math.min(100,Math.max(0,(e.clientY-r.top)/r.height*100)),1);
   };
-  const leave=()=>{s.tx=50;s.ty=50;s.to=0;kick()};
-  card.addEventListener('pointermove',move);card.addEventListener('pointerleave',leave);
+  const leave=()=>{if(!gyroOn||e_isMouse)set(50,50,0)};
+  let e_isMouse=false;
+  card.addEventListener('pointermove',e=>{e_isMouse=e.pointerType==='mouse';if(e_isMouse||(touch&&!gyroOn))move(e)});
+  card.addEventListener('pointerleave',e=>{if(e.pointerType==='mouse'||!gyroOn)set(50,50,0)});
   if(touch){
-    card.addEventListener('pointerdown',e=>{try{card.setPointerCapture(e.pointerId)}catch(_){};move(e)});
-    card.addEventListener('pointerup',leave);card.addEventListener('pointercancel',leave);
+    card.addEventListener('pointerdown',e=>{if(e.pointerType==='mouse'||gyroOn)return;try{card.setPointerCapture(e.pointerId)}catch(_){};move(e)});
+    card.addEventListener('pointerup',e=>{if(e.pointerType!=='mouse'&&!gyroOn)set(50,50,0)});
+    card.addEventListener('pointercancel',()=>{if(!gyroOn)set(50,50,0)});
   }
-  apply();
+  const api={card,set};TILTS.add(api);if(io)io.observe(card);
+  apply();return api;
+}
+/* 폰 기울기 */
+let g0=null,b0=null;
+function onOri(e){
+  if(e.beta==null||e.gamma==null)return;
+  gyroOn=true;
+  const ang=(screen.orientation&&screen.orientation.angle)||window.orientation||0,b=e.beta,g=e.gamma;
+  let x,y;
+  if(ang===90){x=b;y=-g}else if(ang===-90||ang===270){x=-b;y=g}else if(ang===180){x=-g;y=-b}else{x=g;y=b}
+  if(g0===null){g0=x;b0=y}
+  g0+=(x-g0)*.012;b0+=(y-b0)*.012; /* 들고 있는 자세를 천천히 기준으로 삼음 */
+  const dx=Math.max(-1,Math.min(1,(x-g0)/20)),dy=Math.max(-1,Math.min(1,(y-b0)/20));
+  const tx=50+dx*50,ty=50+dy*50,o=Math.min(1,.35+Math.hypot(dx,dy)*.9);
+  for(const t of TILTS){if(!io||VIS.get(t.card)!==false)t.set(tx,ty,o)}
+}
+const needPerm=typeof DeviceOrientationEvent!=='undefined'&&typeof DeviceOrientationEvent.requestPermission==='function';
+let gyroAsked=false;
+function startGyro(){addEventListener('deviceorientation',onOri)}
+async function askGyro(){
+  if(gyroAsked)return;gyroAsked=true;
+  const chip=document.getElementById('gyro-chip');
+  try{
+    const r=await DeviceOrientationEvent.requestPermission();
+    if(r==='granted'){startGyro();if(chip)chip.hidden=true;return}
+  }catch(_){}
+  if(chip){chip.textContent='기울기 꺼짐 · 카드를 손으로 움직여 보세요';chip.disabled=true}
+}
+if(coarse&&typeof DeviceOrientationEvent!=='undefined'){
+  if(!needPerm)startGyro();
+  else{
+    const chip=document.getElementById('gyro-chip');if(chip){chip.hidden=false;chip.addEventListener('click',askGyro)}
+    document.addEventListener('click',askGyro,{once:true,capture:true});
+  }
 }
 
 /* ---------- views ---------- */
@@ -484,8 +525,8 @@ function renderGrid(){
       const el=document.createElement('div');el.className='item';
       const btn=document.createElement('button');btn.type='button';const card=makeCard();btn.append(card);
       const t=document.createElement('div');t.className='t';t.innerHTML='<b></b><span></span>';
-      el.append(btn,t);btn.addEventListener('click',()=>openModal(d.id));tilt(card);
-      it={el,card,t,sig:''};items.set(d.id,it);
+      el.append(btn,t);btn.addEventListener('click',()=>openModal(d.id));const tl=tilt(card);
+      it={el,card,t,sig:'',tl};items.set(d.id,it);
     }
     const sig=[d.core,d.situation,d.mood,d.desc,d.maker,d.foil,no,(d.img||'').length].join('|');
     if(it.sig!==sig){fillCard(it.card,d,no);it.sig=sig}
@@ -493,7 +534,7 @@ function renderGrid(){
     const show=matches(d);it.el.hidden=!show;
     if(grid.children[idx]!==it.el)grid.insertBefore(it.el,grid.children[idx]||null);idx++;
   });
-  for(const [id,it] of items){if(!seen.has(id)){it.el.remove();items.delete(id)}}
+  for(const [id,it] of items){if(!seen.has(id)){it.el.remove();items.delete(id);TILTS.delete(it.tl)}}
   if(!S.cards.length){
     for(let i=0;i<5;i++){const g=document.createElement('div');g.className='item ghost-item';g.innerHTML='<div class="ghost"></div>';grid.append(g)}
     const e=document.createElement('div');e.className='empty';
@@ -534,6 +575,7 @@ function stepModal(dir){const ids=visibleIds();const i=ids.indexOf(S.openId);if(
 $('#m-close').addEventListener('click',closeModal);
 $('#m-prev').addEventListener('click',()=>stepModal(-1));$('#m-next').addEventListener('click',()=>stepModal(1));
 $('#modal').addEventListener('click',e=>{if(e.target.id==='modal')closeModal()});
+{let sx=null;const st=$('#m-stage');st.addEventListener('pointerdown',e=>{sx=e.clientX});st.addEventListener('pointerup',e=>{if(sx!==null&&gyroOn&&e.pointerType!=='mouse'){const dx=e.clientX-sx;if(Math.abs(dx)>50)stepModal(dx<0?1:-1)}sx=null})}
 addEventListener('keydown',e=>{if($('#modal').hidden)return;if(e.key==='Escape')closeModal();if(e.key==='ArrowLeft')stepModal(-1);if(e.key==='ArrowRight')stepModal(1)});
 function disarmDel(){clearTimeout(S.delArm);S.delArm=null;$('#m-del').textContent='삭제'}
 $('#m-del').addEventListener('click',async()=>{
